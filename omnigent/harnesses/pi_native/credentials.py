@@ -465,18 +465,8 @@ def _pi_enabled_model_patterns(root: Path) -> list[str]:
     return [pattern for pattern in raw if isinstance(pattern, str) and pattern.strip()]
 
 
-def pi_own_login_model_options(agent_dir: Path | None = None) -> list[dict[str, object]]:
-    """List logged-in and keyed custom models, filtered by Pi's enabledModels.
-
-    Use the full catalog when curation is empty or unavailable.
-
-    :param agent_dir: Pi agent dir override (tests); defaults to the host's
-        own Pi agent dir.
-    :returns: Picker options shaped like :func:`pi_native_model_options`,
-        qualified as ``provider/model`` — the reference form Pi's ``--model``
-        resolves natively against its own providers.
-    """
-    root = agent_dir if agent_dir is not None else _global_pi_agent_dir()
+def _pi_own_login_models(root: Path) -> list[ScopableModel]:
+    """Read Pi's available model inventory before applying picker curation."""
     logged_in = set(_read_json_object(root / "auth.json"))
     catalogs: list[tuple[str, object]] = [
         (provider_id, payload)
@@ -487,7 +477,7 @@ def pi_own_login_model_options(agent_dir: Path | None = None) -> list[dict[str, 
     for provider_id, payload in declared.items() if _is_str_object_dict(declared) else ():
         api_key = payload.get("apiKey") if _is_str_object_dict(payload) else None
         if provider_id in logged_in or (isinstance(api_key, str) and api_key):
-            # Appended after the models-store rows so declared models.json names win.
+            # Declared models follow the cache so their names win on duplicate references.
             catalogs.append((provider_id, payload))
     catalog: dict[str, ScopableModel] = {}
     for provider_id, payload in catalogs:
@@ -511,7 +501,22 @@ def pi_own_login_model_options(agent_dir: Path | None = None) -> list[dict[str, 
                 name=name if isinstance(name, str) and name else None,
             )
             catalog[entry.reference] = entry
-    entries = list(catalog.values())
+    return list(catalog.values())
+
+
+def pi_own_login_model_options(agent_dir: Path | None = None) -> list[dict[str, object]]:
+    """List logged-in and keyed custom models with Pi's enabledModels curation.
+
+    Use the full inventory when curation is empty or unavailable.
+
+    :param agent_dir: Pi agent dir override (tests); defaults to the host's
+        own Pi agent dir.
+    :returns: Picker options shaped like :func:`pi_native_model_options`,
+        qualified as ``provider/model`` — the reference form Pi's ``--model``
+        resolves natively against its own providers.
+    """
+    root = agent_dir if agent_dir is not None else _global_pi_agent_dir()
+    entries = _pi_own_login_models(root)
     patterns = _pi_enabled_model_patterns(root)
     if patterns:
         scoped = scope_models(patterns, entries)
@@ -566,10 +571,11 @@ def _default_model_provider_id(provider: PiProviderConfig, rendered: _PiModelsCo
 
 
 def pi_own_login_serves_reference(reference: str | None, agent_dir: Path | None = None) -> bool:
-    """Return whether Pi's own logged-in catalog serves the qualified *reference*."""
+    """Check a saved Pi reference independently of the picker shortlist."""
     if not reference:
         return False
-    return any(option["id"] == reference for option in pi_own_login_model_options(agent_dir))
+    root = agent_dir if agent_dir is not None else _global_pi_agent_dir()
+    return any(model.reference == reference for model in _pi_own_login_models(root))
 
 
 def pi_native_model_options(

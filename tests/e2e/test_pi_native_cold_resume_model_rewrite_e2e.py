@@ -130,6 +130,15 @@ os_env:
                 assert time.monotonic() < deadline, "initial Pi terminal did not stop"
                 time.sleep(0.5)
 
+            # Hiding a saved model must preserve its launch identity.
+            (agent / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "enabledModels": ["openai-codex/gpt-5.5"],
+                    }
+                )
+            )
+
             # A stale catalog must be replaced by the new process's publication.
             http_client.post(
                 f"/v1/sessions/{session_id}/events",
@@ -160,7 +169,7 @@ os_env:
             assert not (bridge / "pi-agent/models.json").exists()
             options = _wait_for_catalog(http_client, session_id)["model_options"]
             ids = {option["id"] for option in options}
-            assert {_SELECTION, "openai-codex/gpt-5.5"} <= ids
+            assert ids == {_SELECTION, "openai-codex/gpt-5.5"}
             assert not any(model.startswith("omnigent/") for model in ids)
         finally:
             with contextlib.suppress(httpx.HTTPError):

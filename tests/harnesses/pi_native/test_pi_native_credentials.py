@@ -776,14 +776,44 @@ def test_pi_own_login_reference_matches_slash_bearing_model_id(tmp_path: Path) -
     assert not creds.pi_own_login_serves_reference("openrouter/qwen", tmp_path)
 
 
+@pytest.mark.parametrize("curated", [False, True])
+@pytest.mark.parametrize(
+    ("provider_id", "model_id"),
+    [("openai-codex", "gpt-5.6-sol"), ("openai", "gpt-4o"), ("local-gateway", "custom-model")],
+)
 def test_resolve_prefers_pi_own_login_for_served_reference(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, curated: bool, provider_id: str, model_id: str
 ) -> None:
-    seed_pi_own_login_catalog(tmp_path, "openai-codex", ["gpt-5.6-sol"])
+    selected = f"{provider_id}/{model_id}"
+    alternative = f"{provider_id}/picker-model"
+    if provider_id == "local-gateway":
+        (tmp_path / "models.json").write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        provider_id: {
+                            "apiKey": "synthetic",
+                            "models": [{"id": model_id}, {"id": "picker-model"}],
+                        }
+                    }
+                }
+            )
+        )
+    else:
+        seed_pi_own_login_catalog(tmp_path, provider_id, [model_id, "picker-model"])
+    if curated:
+        (tmp_path / "settings.json").write_text(json.dumps({"enabledModels": [alternative]}))
+        # Resolver grammar has real-Pi coverage; this checks inventory versus picker use.
+        monkeypatch.setattr(
+            creds,
+            "scope_models",
+            lambda patterns, entries: [creds.ScopableModel(provider_id, "picker-model")],
+        )
+        assert [o["id"] for o in creds.pi_own_login_model_options(tmp_path)] == [alternative]
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path))
 
     provider = creds.resolve_pi_native_provider(
-        model="openai-codex/gpt-5.6-sol", config_loader=_openrouter_default_pi_config
+        model=selected, config_loader=_openrouter_default_pi_config
     )
 
     assert provider is None
@@ -839,19 +869,22 @@ def test_resolve_configured_provider_prefix_wins_over_pi_own_login(
     assert provider.model == "gpt-4o-mini"
 
 
+@pytest.mark.parametrize(
+    ("provider_id", "model_id"), [("openai-codex", "gpt-5.6-sol"), ("openai", "gpt-4o")]
+)
 def test_resolve_managed_selection_stays_managed_despite_pi_own_login_collision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider_id: str, model_id: str
 ) -> None:
     """An explicit managed pick keeps managed routing even if Pi's login serves the same id."""
-    seed_pi_own_login_catalog(tmp_path, "openai-codex", ["gpt-5.6-sol"])
+    seed_pi_own_login_catalog(tmp_path, provider_id, [model_id])
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path))
 
     provider = creds.resolve_pi_native_provider(
-        model="omnigent/openai-codex/gpt-5.6-sol", config_loader=_openrouter_default_pi_config
+        model=f"omnigent/{provider_id}/{model_id}", config_loader=_openrouter_default_pi_config
     )
 
     assert provider is not None
-    assert provider.model == "openai-codex/gpt-5.6-sol"
+    assert provider.model == f"{provider_id}/{model_id}"
 
 
 def test_subscription_default_returns_none() -> None:
