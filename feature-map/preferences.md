@@ -144,7 +144,9 @@ observed results, any mocked services, and remaining entry-point gaps.
 `test_durable_preference_clients_offline_reconnect_and_restart`. It launches
 separate client processes with private caches, queues all four groups offline,
 resolves competing edits through two server replicas, injects a lost response
-after a real commit, restarts both servers, and verifies retry/deletion convergence.
+after a real commit, stops both servers, and starts a fresh replica to verify
+retry/deletion convergence. It also rejects a duplicate conflict resolution,
+explicitly discards that blocked edit, and delivers the remaining queued work.
 The lost-response fault is injected; HTTP and SQL are real. This is local OSS
 client/API evidence, not automatic host sync, launcher adoption, or Arclet proof.
 

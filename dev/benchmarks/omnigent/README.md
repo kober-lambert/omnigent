@@ -298,6 +298,8 @@ adds real consumed operations/receipts before timing. `--preference-clients`
 plugin key per client so contention measurements are not conflict rejection
 measurements. Use at least clients + 1 keys and concurrency no higher than the
 client count. The correctness tests separately exercise conflicting same-key edits.
+The CLI rejects sync workloads that exceed the client pool or the per-namespace
+operation budget before starting a server; the budget is conservative for separate users.
 
 ```sh
 # Sequential latency, including client disk persistence.

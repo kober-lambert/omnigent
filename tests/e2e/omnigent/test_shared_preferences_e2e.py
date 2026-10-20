@@ -114,6 +114,7 @@ def test_shared_preferences_across_replicas_and_restart(tmp_path, db_uri):
 _CLIENT_PROCESS = """
 import asyncio, json, sys
 from pathlib import Path
+from uuid import UUID
 import httpx
 from omnigent.preference_client import PreferenceClient
 from omnigent.preference_sync import PreferenceNamespace, SharedPreferenceKey
@@ -134,9 +135,10 @@ async def drive():
 try:
     if action == 'enqueue':
         for edit in json.loads(payload):
-            from uuid import UUID
             local.enqueue(SharedPreferenceKey.model_validate(edit['key']), edit['value'],
                 resolves=tuple(UUID(item) for item in edit.get('resolves', [])))
+    elif action == 'discard':
+        local.discard(UUID(payload))
     else:
         asyncio.run(drive())
 except httpx.HTTPError as exc:
@@ -168,7 +170,7 @@ def test_durable_preference_clients_offline_reconnect_and_restart(tmp_path, db_u
                 installation,
                 url,
                 action,
-                json.dumps(edits),
+                edits if action == "discard" else json.dumps(edits),
             ],
             env=isolated_process_env(root / "home", {}, None),
             capture_output=True,
@@ -207,6 +209,16 @@ def test_durable_preference_clients_offline_reconnect_and_restart(tmp_path, db_u
             assert len(saved["entries"]) == 5 and saved["conflicts"] == []
             drive("remote", replica, "enqueue", [edit(model_key, "remote-choice")])
             conflict = drive("remote", replica)["snapshot"]["conflicts"][0]
+            drive("laptop", first)
+            blocked = drive(
+                "laptop",
+                first,
+                "enqueue",
+                [
+                    edit(model_key, "laptop-choice", resolves=[conflict["operation_id"]]),
+                    edit({"kind": "harness", "name": "default"}, "codex-native"),
+                ],
+            )["pending"][0]
             drive(
                 "remote",
                 replica,
@@ -214,6 +226,25 @@ def test_durable_preference_clients_offline_reconnect_and_restart(tmp_path, db_u
                 [edit(model_key, "remote-choice", resolves=[conflict["operation_id"]])],
             )
             drive("remote", replica)
+            rejected = drive("laptop", first, failure=True)
+            assert rejected["error"] == "HTTPStatusError"
+            assert len(rejected["pending"]) == 2
+            drive("laptop", first, "discard", blocked["operation_id"])
+            recovered = drive("laptop", first)
+            assert recovered["pending"] == [] and recovered["snapshot"]["conflicts"] == []
+            assert any(
+                entry["key"] == {"kind": "harness", "name": "default"}
+                and entry["value"] == "codex-native"
+                for entry in recovered["snapshot"]["entries"]
+            )
+            assert (
+                next(
+                    entry
+                    for entry in recovered["snapshot"]["entries"]
+                    if entry["key"] == model_key
+                )["value"]
+                == "remote-choice"
+            )
             drive("laptop", first)
             drive("laptop", first, "enqueue", [edit(model_key, "lost-ack-choice")])
             uncertain = drive("laptop", first, "lose-ack", failure=True)

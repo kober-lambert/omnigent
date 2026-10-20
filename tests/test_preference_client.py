@@ -179,6 +179,8 @@ async def test_concurrent_local_writers_and_sync_lock(peers):
         with FileLock(str(local.path) + ".sync.lock"):
             with pytest.raises(Timeout):
                 await local.sync(http)
+            with pytest.raises(Timeout):
+                local.discard(local.pending()[0].operation_id)
         snapshot = await local.sync(http)
     assert snapshot.entries[0].version == 12 and snapshot.conflicts == []
 
@@ -238,3 +240,26 @@ async def test_outbox_limit_and_invalid_edit_leave_existing_work(peers, monkeypa
     with pytest.raises(ValueError, match="outbox is full"):
         local.enqueue(MODEL, "b")
     assert [operation.operation_id for operation in local.pending()] == [operation_id]
+
+
+@pytest.mark.asyncio
+async def test_discard_uncertain_head_preserves_successor_conflicts(peers):
+    store, (local, remote) = peers
+    async with httpx.AsyncClient(base_url="http://test", transport=transport(store)) as http:
+        await local.sync(http)
+        first = local.enqueue(MODEL, "a")
+        successor = local.enqueue(MODEL, "b")
+        # The server committed, but the client has not received its receipt.
+        store.apply(local.pending()[0], user_id="alice")
+        before = local.pending()
+        with pytest.raises(ValueError, match="first queued"):
+            local.discard(successor)
+        assert local.pending() == before
+        assert local.discard(first) == before[0]
+        assert local.pending() == [before[1]]
+        snapshot = await local.sync(http)
+        assert snapshot.entries[0].value == "a"
+        assert [item.value for item in snapshot.conflicts] == ["b"]
+        assert await remote.sync(http) == snapshot
+        with pytest.raises(ValueError, match="first queued"):
+            local.discard(first)

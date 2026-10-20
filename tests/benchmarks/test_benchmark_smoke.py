@@ -90,6 +90,53 @@ def _smoke_args(**overrides: object) -> argparse.Namespace:
 # ── pure-layer unit checks (no server) ───────────────────────
 
 
+@pytest.mark.parametrize(
+    ("journey", "arguments", "valid"),
+    [
+        ("sync_same_user", ["--concurrency", "25"], False),
+        ("sync_many_users", ["--preference-clients", "32"], False),
+        ("sync_same_user", ["--preference-clients", "1", "--preference-keys", "1"], False),
+        (
+            "sync_same_user",
+            ["--preference-history", "9000", "--preference-keys", "512", "--concurrency", "16"],
+            False,
+        ),
+        (
+            "write",
+            ["--preference-history", "9000", "--preference-keys", "512", "--iterations", "500"],
+            False,
+        ),
+        (
+            "write",
+            ["--preference-history", "9000", "--preference-keys", "512", "--iterations", "478"],
+            True,
+        ),
+        (
+            "read",
+            [
+                "--preference-history",
+                "9000",
+                "--preference-keys",
+                "512",
+                "--iterations",
+                "10000",
+                "--concurrency",
+                "25",
+            ],
+            True,
+        ),
+    ],
+)
+def test_preference_benchmark_workload_bounds(journey, arguments, valid):
+    arguments = ["--journeys", "shared_preferences_" + journey, *arguments]
+    if valid:
+        bench_run._parse_args(arguments)
+    else:
+        with pytest.raises(SystemExit) as exc:
+            bench_run._parse_args(arguments)
+        assert exc.value.code == 2
+
+
 def test_backend_of_classifies_uri_schemes() -> None:
     """The report's backend label is derived from the URI scheme."""
     assert bench_run._backend_of(None) == "sqlite"

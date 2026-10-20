@@ -62,6 +62,13 @@ state are rejected. Corrupt local state fails visibly instead of resetting and
 discarding pending work. A final refresh can fail after delivery: acknowledged
 edits remain acknowledged, and the next sync refreshes authoritative state.
 
+Permanent rejections, such as resolving a conflict that another machine already
+resolved, remain visible as HTTP errors with the edit still queued. After reviewing
+the error and `pending()`, the caller can explicitly `discard(operation_id)` for
+the first queued edit and retry sync. This never undoes a server commit or changes
+successors' expected versions; an uncertain discarded edit may already have
+applied. Discard and sync share the process lock. No rejection is silently dropped.
+
 At most 512 local pending operations are allowed. The server still enforces its
 separate history/conflict/key limits. There is no automatic history compaction
 or cache reset. Existing server retention limits remain a pre-activation concern.

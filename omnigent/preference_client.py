@@ -95,6 +95,30 @@ class PreferenceClient:
             rows = connection.execute("SELECT operation FROM outbox ORDER BY sequence").fetchall()
         return [PreferenceMutation.model_validate_json(row[0]) for row in rows]
 
+    def discard(self, operation_id: UUID) -> PreferenceMutation:
+        """Explicitly abandon the first queued edit, allowing later work to sync.
+
+        Inspect the HTTP error and ``pending()`` first. Discarding never undoes
+        a server commit; uncertain deliveries may already have applied. Successors
+        retain their versions so they cannot silently overwrite that value.
+        """
+        with (
+            FileLock(str(self.path) + ".sync.lock", timeout=0),
+            self._transaction() as connection,
+        ):
+            row = connection.execute(
+                "SELECT sequence, operation FROM outbox ORDER BY sequence LIMIT 1"
+            ).fetchone()
+            operation = PreferenceMutation.model_validate_json(row[1]) if row else None
+            if operation is None or operation.operation_id != operation_id:
+                raise ValueError("Only the first queued preference operation can be discarded")
+            connection.execute(
+                "UPDATE outbox SET predecessor = NULL WHERE predecessor = ?",
+                (str(operation_id),),
+            )
+            connection.execute("DELETE FROM outbox WHERE sequence = ?", (row[0],))
+        return operation
+
     def enqueue(
         self, key: SharedPreferenceKey, value: Value, *, resolves: tuple[UUID, ...] = ()
     ) -> UUID:
