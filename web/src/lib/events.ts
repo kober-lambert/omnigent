@@ -11,6 +11,7 @@ import type { NativePermissionDelivery } from "./nativePermissionDelivery";
 
 import type { RoutingDecisionExtras } from "./routingDecision";
 import type {
+  AgyPermission,
   BackgroundTaskInfo,
   CodexPersistMode,
   ErrorInfo,
@@ -282,6 +283,8 @@ export interface ElicitationRequest {
   rememberScope?: RememberScope | null;
   /** Codex-native MCP approval persistence modes advertised by the request. */
   codexPersistModes?: CodexPersistMode[];
+  /** Optional Antigravity action description and advertised persist pattern. */
+  agyPermission?: AgyPermission | null;
 }
 
 /**
@@ -716,6 +719,8 @@ export interface SessionSandboxStatusEvent {
   stage: SandboxLaunchStage;
   /** Failure detail when `stage === "failed"`; `null` otherwise. */
   error: string | null;
+  /** Sandbox provider being launched, e.g. `"arclet"`, when the server reports it. */
+  provider?: string;
 }
 
 /** Startup state of one harness MCP server (Codex's `McpServerStartupState`). */

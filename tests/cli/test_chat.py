@@ -216,8 +216,19 @@ def test_validate_agent_spec_valid_returns_none(
     assert _validate_agent_spec(agent_dir) is None
 
 
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        httpx.ConnectError,
+        httpx.ReadError,
+        httpx.ConnectTimeout,
+        httpx.ReadTimeout,
+        httpx.RemoteProtocolError,
+    ],
+)
 def test_wait_for_server_uses_fast_poll_before_backoff(
     monkeypatch: pytest.MonkeyPatch,
+    error_type: type[httpx.TransportError],
 ) -> None:
     """
     Local chat startup should probe aggressively during the initial
@@ -260,7 +271,7 @@ def test_wait_for_server_uses_fast_poll_before_backoff(
         assert trust_env is False
         http_calls["count"] += 1
         if http_calls["count"] < 3:
-            raise __import__("httpx").ConnectError("not ready")
+            raise error_type("not ready")
         return _Resp(200)
 
     monkeypatch.setattr("omnigent.chat.time.monotonic", _fake_monotonic)
@@ -346,8 +357,13 @@ def test_raise_server_failed_handles_unreadable_log(tmp_path: Path) -> None:
     assert "python -m omnigent server" in msg
 
 
+@pytest.mark.parametrize(
+    "first_status",
+    [False, httpx.ReadError, httpx.ReadTimeout, httpx.RemoteProtocolError],
+)
 def test_wait_for_server_waits_for_runner_tunnel_status(
     monkeypatch: pytest.MonkeyPatch,
+    first_status: bool | type[httpx.TransportError],
 ) -> None:
     """
     Local chat startup waits until the runner's WS tunnel is online.
@@ -377,7 +393,7 @@ def test_wait_for_server_waits_for_runner_tunnel_status(
     )
     monotonic_values = iter([0.0, 0.0, 0.2, 0.2, 0.3])
     sleep_calls: list[float] = []
-    status_bodies = iter([{"online": False}, {"online": True}])
+    status_results = iter([first_status, True])
     requested_urls: list[str] = []
 
     def _fake_monotonic() -> float:
@@ -397,7 +413,10 @@ def test_wait_for_server_waits_for_runner_tunnel_status(
         if url.endswith("/health"):
             return _Resp(200)
         if url.endswith("/v1/runners/runner_wait_test/status"):
-            return _Resp(200, next(status_bodies))
+            result = next(status_results)
+            if isinstance(result, type):
+                raise result("runner status is starting")
+            return _Resp(200, {"online": result})
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr("omnigent.chat.time.monotonic", _fake_monotonic)
@@ -413,6 +432,98 @@ def test_wait_for_server_waits_for_runner_tunnel_status(
         "http://127.0.0.1:8123/health",
         "http://127.0.0.1:8123/v1/runners/runner_wait_test/status",
     ]
+
+
+@pytest.mark.parametrize("probe", ["health", "runner"])
+@pytest.mark.parametrize("failure", [httpx.ReadError, httpx.ReadTimeout, 401, 403])
+def test_wait_for_server_keeps_deadline_after_failed_probes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    probe: str,
+    failure: type[httpx.TransportError] | int,
+) -> None:
+    log = tmp_path / "server.log"
+    log.write_text("server still initializing\n")
+    server = SimpleNamespace(
+        proc=SimpleNamespace(poll=lambda: None, args=["server"]),
+        runner_id="starting" if probe == "runner" else None,
+        log_path=log,
+    )
+    times = iter([0.0, 0.0, 0.1, 0.1, 0.9, 0.9, 1.0])
+    requested: list[str] = []
+
+    def get(url: str, **kwargs: object) -> httpx.Response:
+        assert kwargs["trust_env"] is False
+        requested.append(url)
+        if probe == "runner" and url.endswith("/health"):
+            return httpx.Response(200)
+        if isinstance(failure, int):
+            return httpx.Response(failure)
+        raise failure("not ready")
+
+    monkeypatch.setattr(chat_module.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(chat_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(chat_module.httpx, "get", get)
+
+    with pytest.raises(click.ClickException, match="server still initializing"):
+        _wait_for_server(8123, server, timeout=1.0)
+
+    assert len(requested) == (4 if probe == "runner" else 2)
+
+
+def test_wait_for_server_detects_process_exit_after_reset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log = tmp_path / "server.log"
+    log.write_text("server exited during startup\n")
+    exits = iter([None, 7])
+    server = SimpleNamespace(
+        proc=SimpleNamespace(poll=lambda: next(exits), args=["server"]),
+        runner_id=None,
+        log_path=log,
+    )
+    requests: list[str] = []
+
+    def get(url: str, **kwargs: object) -> httpx.Response:
+        requests.append(url)
+        raise httpx.ReadError("connection reset")
+
+    monkeypatch.setattr(chat_module.httpx, "get", get)
+    monkeypatch.setattr(chat_module.time, "sleep", lambda _: None)
+
+    with pytest.raises(click.ClickException, match="server exited during startup"):
+        _wait_for_server(8123, server)
+
+    assert requests == ["http://127.0.0.1:8123/health"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValueError("invalid response"),
+        RuntimeError("authentication context unavailable"),
+        httpx.HTTPStatusError(
+            "authentication rejected",
+            request=httpx.Request("GET", "http://localhost/health"),
+            response=httpx.Response(401),
+        ),
+    ],
+)
+def test_wait_for_server_preserves_non_transport_errors(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    server = SimpleNamespace(proc=SimpleNamespace(poll=lambda: None), runner_id=None)
+
+    def get(*args: object, **kwargs: object) -> httpx.Response:
+        raise error
+
+    monkeypatch.setattr(chat_module.httpx, "get", get)
+    monkeypatch.setattr(chat_module.time, "sleep", lambda _: pytest.fail("unexpected retry"))
+
+    with pytest.raises(type(error)) as exc:
+        _wait_for_server(8123, server)
+
+    assert exc.value is error
 
 
 def test_start_local_server_spawns_runner_as_sibling(
@@ -495,7 +606,7 @@ def test_start_local_server_spawns_runner_as_sibling(
 
     # Server subprocess was spawned.
     assert len(server_popen_calls) == 1
-    assert server_popen_calls[0].args[2:6] == [
+    assert server_popen_calls[0].args[3:7] == [
         "omnigent.cli",
         "server",
         "--host",
@@ -1006,8 +1117,8 @@ def test_run_local_headless_prompt_uses_directory_bundle_for_root_config_yaml(
     """One-shot local prompt mode also preserves directory-agent siblings.
 
     This covers ``omnigent run bundle/config.yaml -p ...``. Without the
-    canonicalization in the headless helper, interactive runs would upload the
-    full bundle while one-shot runs would silently upload only ``config.yaml``.
+    canonicalization in the headless helper, startup registration would lose
+    the sibling directories. Session creation reuses the registered agent.
     """
     agent_dir = tmp_path / "orchestrator"
     agent_dir.mkdir()
@@ -1075,13 +1186,13 @@ def test_run_local_headless_prompt_uses_directory_bundle_for_root_config_yaml(
 
     assert captured["server_spec_path"] == agent_dir
     assert captured["server_ephemeral"] is True
-    assert captured["bundle_path"] == agent_dir
+    assert "bundle_path" not in captured
     headless = captured["headless"]
     assert isinstance(headless, dict)
     assert headless["agent_name"] == "orchestrator"
     assert headless["prompt"] == "say hi"
     assert headless["runner_id"] == "runner_headless"
-    assert headless["session_bundle"] == b"bundle-bytes"
+    assert headless["session_bundle"] is None
 
 
 def test_chat_local_uses_directory_bundle_for_root_config_yaml(
@@ -1092,8 +1203,8 @@ def test_chat_local_uses_directory_bundle_for_root_config_yaml(
 
     This covers the ``_chat_local`` path used by local non-daemon REPL runs.
     If the helper passes ``bundle/config.yaml`` through unchanged, the local
-    server and session bundle lose sibling directories such as ``agents/`` and
-    ``skills/``.
+    server registration loses sibling directories such as ``agents/`` and
+    ``skills/``. The REPL reuses that registration without an HTTP upload.
     """
     agent_dir = tmp_path / "orchestrator"
     (agent_dir / "skills" / "investigate").mkdir(parents=True)
@@ -1159,7 +1270,7 @@ def test_chat_local_uses_directory_bundle_for_root_config_yaml(
     assert captured["server_spec_path"] == agent_dir
     assert captured["server_port"] == 45678
     assert captured["server_ephemeral"] is True
-    assert captured["bundle_path"] == agent_dir
+    assert "bundle_path" not in captured
     chat_args = captured["chat_args"]
     assert isinstance(chat_args, tuple)
     assert chat_args[0] == "http://127.0.0.1:45678"
@@ -1170,7 +1281,7 @@ def test_chat_local_uses_directory_bundle_for_root_config_yaml(
     assert chat_kwargs["initial_message"] == "say hi"
     assert chat_kwargs["resume_conversation_id"] == "conv_resume"
     assert chat_kwargs["runner_id"] == "runner_local"
-    assert chat_kwargs["session_bundle"] == b"bundle-bytes"
+    assert chat_kwargs.get("session_bundle") is None
     skills = chat_kwargs["skills"]
     assert isinstance(skills, list)
     assert "investigate" in {skill.name for skill in skills}

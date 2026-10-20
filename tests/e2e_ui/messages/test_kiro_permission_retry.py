@@ -14,12 +14,12 @@ from playwright.sync_api import Page, Route, expect
 
 from omnigent.harnesses.kiro_native.bridge import acp_record_path
 from omnigent.harnesses.kiro_native.permissions import kiro_permission_elicitation_id
+from tests._helpers.polling import poll_until
 
 from .test_kiro_concurrent_permissions import (
     _FAKE_KIRO_SOURCE,
     _pending_elicitations,
     _recorder_response_ids,
-    _wait_for,
 )
 from .test_kiro_concurrent_permissions import (
     kiro_shim_processes as _kiro_shim_processes,
@@ -150,10 +150,10 @@ def test_kiro_manual_retry(
             retry.click()
         if held_responses:
             held_responses[0].fulfill(status=503, json={"error": "late response failure"})
-    _wait_for(lambda: first_id in _recorder_response_ids(record_file), timeout_s=15)
+    poll_until(lambda: first_id in _recorder_response_ids(record_file), timeout_s=15)
     expect(retry).not_to_be_visible(timeout=15_000)
     second_eid = kiro_permission_elicitation_id(session_id, "perm-req-1-2")
-    _wait_for(
+    poll_until(
         lambda: second_eid in json.dumps(_pending_elicitations(base_url, session_id)), timeout_s=15
     )
     page.wait_for_timeout(1_000)
@@ -188,7 +188,7 @@ def test_kiro_late_confirmation_removes_retry(
     if reconnect:
         page.context.set_offline(True)
         try:
-            _wait_for(lambda: "perm-req-1-1" in _recorder_response_ids(record_file), timeout_s=15)
+            poll_until(lambda: "perm-req-1-1" in _recorder_response_ids(record_file), timeout_s=15)
         finally:
             page.context.set_offline(False)
     expect(retry).not_to_be_visible(timeout=12_000)
@@ -225,7 +225,7 @@ def test_kiro_legacy_server_does_not_repeat_enter(
     snapshot = _pending_elicitations(base_url, session_id)
     assert "native_delivery" not in snapshot[0]["params"], "requires a pre-delivery-state server"
     page.get_by_role("button", name="Approve", exact=True).click()
-    _wait_for(lambda: "perm-req-1-1" in _recorder_response_ids(record_file), timeout_s=20)
+    poll_until(lambda: "perm-req-1-1" in _recorder_response_ids(record_file), timeout_s=20)
     page.wait_for_timeout(2_000)
     assert _recorder_response_ids(record_file) == {"perm-req-1-1"}
     assert record_file.with_suffix(record_file.suffix + ".enters").read_text().splitlines() == [
@@ -311,11 +311,11 @@ def test_kiro_two_tabs_cannot_repeat_an_old_retry(
         other.reload()
         expect(other_retry).to_be_visible()
         other_retry.click()
-        _wait_for(lambda: first_id in _recorder_response_ids(record_file), timeout_s=15)
+        poll_until(lambda: first_id in _recorder_response_ids(record_file), timeout_s=15)
         expect(retry).not_to_be_visible(timeout=15_000)
         expect(other.get_by_text("Elicitation resolved", exact=True)).to_be_visible(timeout=15_000)
         second_eid = kiro_permission_elicitation_id(session_id, "perm-req-1-2")
-        _wait_for(
+        poll_until(
             lambda: second_eid in json.dumps(_pending_elicitations(base_url, session_id)),
             timeout_s=15,
         )
@@ -354,7 +354,7 @@ def test_kiro_retry_recovers_after_reporting_outage(
         expect(standalone.get_by_role("button", name="Approve", exact=True)).to_be_visible()
         inbox.goto(f"{base_url}/inbox")
         approve.click()
-        _wait_for(lambda: enters_file.exists(), timeout_s=5)
+        poll_until(lambda: enters_file.exists(), timeout_s=5)
         runner.send_signal(signal.SIGSTOP)
         started = time.monotonic()
         # Leave the browser and server live for the real 30-second cleanup.
@@ -375,7 +375,7 @@ def test_kiro_retry_recovers_after_reporting_outage(
         assert page.request.get(detail_url).json()["native_delivery"]["state"] == "unconfirmed"
         assert enters_file.read_text().splitlines() == [first_id]
         standalone.get_by_role("button", name="Retry sending approval").click()
-        _wait_for(lambda: first_id in _recorder_response_ids(record_file), timeout_s=15)
+        poll_until(lambda: first_id in _recorder_response_ids(record_file), timeout_s=15)
         expect(page.get_by_text("Resolved in Kiro", exact=False)).to_be_visible()
         expect(standalone.get_by_text("Elicitation resolved", exact=True)).to_be_visible()
         for surface in (page, standalone, inbox):

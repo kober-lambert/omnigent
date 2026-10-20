@@ -512,6 +512,54 @@ os_env:
 Inside the sandbox, `databricks --profile dbc-adb7b1a3-9097 current-user me`
 works; the sandbox holds only `oa_cred_*` placeholders, never a live token.
 
+### Git over SSH from a sandbox
+
+`sandbox.git_ssh` grants one Git repository and one SSH operation at a time.
+The trusted parent runs OpenSSH with the private key. The sandbox receives a
+Git transport helper and a private Unix socket; it cannot read the key or
+connect directly to the SSH host. Use a read-only deploy key for `fetch` when
+the server supports one.
+
+```yaml
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    type: auto # resolves to linux_bwrap or darwin_seatbelt
+    git_ssh:
+      - host: github.com
+        port: 22
+        username: git
+        repository: my-org/my-repo.git
+        operations: [fetch]
+        identity_file: /home/runner/.ssh/my-repo-deploy-key
+        known_hosts_file: /home/runner/.ssh/github-pinned-host-key
+```
+
+The `known_hosts_file` must contain one exact host key entry for `host`, for
+example `github.com ssh-ed25519 <public-key>`. Record the expected key through
+a trusted channel; do not accept an unverified `ssh-keyscan` result. Keep both
+files outside sandbox read and write paths. Use literal absolute file paths;
+`~` is not expanded. The same binding can be used from
+`sys_os_shell` and sandboxed terminals. Run `git clone
+git@github.com:my-org/my-repo.git` or `git fetch` as usual. Add `push` to
+`operations` only for a write-capable key, and add separate bindings for
+submodules or other repositories.
+
+DNS names are resolved by the parent for each connection, and every returned
+address must be allowed. Public addresses need no extra setting. For a private
+SSH server, set `allowed_cidrs` on that binding to the narrow network range
+that contains its addresses. The parent pins the chosen address for the SSH
+connection and verifies the SSH host key against the configured name.
+Loopback remains blocked unless a local development binding uses a loopback IP
+literal, its exact `/32` CIDR, and `allow_loopback: true` together. Do not use
+that option for a shared or production SSH server.
+
+This grant covers Git's `git-upload-pack` and, when explicitly allowed,
+`git-receive-pack`. It does not grant a shell, arbitrary SSH commands, or Git
+LFS HTTP authentication. Local `linux_bwrap` and `darwin_seatbelt` sandboxes
+support it; other backends reject the setting.
+
 ### Refreshing proxy credentials
 
 File and Unix socket credential sources can opt into renewal with
@@ -566,6 +614,42 @@ a private broker for renewable credentials instead.
 ## Tools
 
 Tools are declared under `tools` by name.
+
+### Uploaded-agent compatibility
+
+HTTP-uploaded agent bundles cannot declare server-side Python or TypeScript
+source-file tools, server-side callable tools, unregistered policy handlers, or
+absolute/escaping working directories. This includes terminals and nested
+agents. These restrictions apply on multi-user servers and, starting in 0.19.0,
+on local single-user servers too, including bundles uploaded by `omnigent run`.
+Loopback requests can originate from agents as well as the operator.
+
+Invalid uploads return HTTP 400 before tools or policy handlers are imported.
+Existing uploaded agents using these features also fail bundle validation when
+adding, updating, or deleting MCP-server settings; rejected edits leave the
+stored bundle unchanged. The agent configuration read/patch endpoints enforce
+the same validation on legacy bundles.
+
+To migrate an existing uploaded agent:
+
+1. Expose its custom tools through an MCP server and replace the source-file
+   tool entries with `type: mcp` entries, as shown below. Update nested agents too.
+2. [Register custom policy handlers on the server](POLICIES.md#setting-up-server-wide-policies)
+   and change working directories to relative paths contained in the workspace.
+3. Replace the session's bundle through `PUT /v1/sessions/{id}/agent`, or upload
+   the corrected bundle and start a new session. Installing an agent version
+   alone does not rewrite existing sessions.
+4. Make subsequent MCP configuration changes on the migrated agent. Removing an
+   MCP server from an old agent does not bypass bundle validation.
+
+Use operator-registered agents (`omnigent server --agent ./my-agent`) for trusted
+in-process tools, or MCP/client tools for uploaded agents.
+`omnigent run ./my-agent --no-session` starts a dedicated local server with
+trusted startup registration and creates its session from that registration. Direct trusted
+in-process callers retain the explicit
+`validate_agent_bundle(..., enforce_handler_allowlist=False)` opt-out; HTTP
+requests cannot select it. Changing a tool's declared runtime alone is not a
+migration: client tools require a client-provided implementation.
 
 ### MCP server
 

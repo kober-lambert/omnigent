@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -3357,6 +3358,87 @@ def test_session_start_posts_model_options_from_registry(tmp_path: Path) -> None
     _run_extension_script(node, _extension_path(), script)
 
 
+def test_session_start_scoped_models_curate_model_options(tmp_path: Path) -> None:
+    """
+    A session with a resolved model scope posts THAT scope, not the registry.
+
+    Pi resolves ``--models`` / settings ``enabledModels`` into
+    ``ctx.scopedModels`` — the exact set its own Ctrl+P picker cycles. When
+    the scope is non-empty the extension must post it as the picker catalog
+    (keeping the launch model listed even when the scope excludes it) instead
+    of dumping ``registry.getAvailable()`` — the union of every logged-in
+    provider's full catalog. An empty scope still falls back to the registry.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the pi-native extension e2e test")
+
+    script = (
+        _MODEL_SWITCH_HARNESS
+        + r"""
+(async () => {
+  // Scope excludes the launch model: the posted catalog is the launch model
+  // plus the scope, and the registry is never consulted (it throws if read).
+  const throwingRegistry = {
+    getAvailable: () => { throw new Error("scoped session must not list the registry"); },
+    getAll: () => { throw new Error("scoped session must not list the registry"); },
+  };
+  const scopedCtx = {
+    ...ctx,
+    scopedModels: [
+      { model: { provider: "omnigent", id: "databricks-claude-opus-4-1", name: "Opus" } },
+    ],
+    modelRegistry: throwingRegistry,
+  };
+  await handlers.session_start({}, scopedCtx);
+  let opts = posted.filter((e) => e.type === "external_model_options");
+  assert.equal(opts.length, 1, JSON.stringify(posted));
+  assert.deepEqual(
+    opts[0].data.models.map((m) => m.id),
+    [
+      "omnigent/databricks-claude-sonnet-4-6",
+      "omnigent/databricks-claude-opus-4-1",
+    ],
+    JSON.stringify(opts[0].data.models),
+  );
+  assert.equal(opts[0].data.models[1].displayName, "Opus");
+
+  // Scope includes the launch model: exactly the scope, no duplicate row.
+  const inScopeCtx = {
+    ...scopedCtx,
+    scopedModels: [
+      { model: { provider: "omnigent", id: "databricks-claude-sonnet-4-6", name: "Sonnet" } },
+    ],
+  };
+  await handlers.session_start({}, inScopeCtx);
+  opts = posted.filter((e) => e.type === "external_model_options");
+  assert.equal(opts.length, 2, JSON.stringify(posted));
+  assert.deepEqual(opts[1].data.models.map((m) => m.id), [
+    "omnigent/databricks-claude-sonnet-4-6",
+  ]);
+
+  // An empty scope means "no curation": fall back to getAvailable().
+  await handlers.session_start({}, { ...ctx, scopedModels: [] });
+  opts = posted.filter((e) => e.type === "external_model_options");
+  assert.equal(opts.length, 3, JSON.stringify(posted));
+  assert.deepEqual(
+    opts[2].data.models.map((m) => m.id),
+    [
+      "omnigent/databricks-claude-sonnet-4-6",
+      "omnigent/databricks-claude-opus-4-1",
+    ],
+  );
+  finish();
+})().catch((error) => {
+  finish();
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+    )
+    _run_extension_script(node, _extension_path(), script)
+
+
 def test_models_without_provider_keep_bare_id_behavior(tmp_path: Path) -> None:
     """Older Pi model objects without ``provider`` still populate and mirror."""
     node = shutil.which("node")
@@ -3675,6 +3757,79 @@ const statuses = () => posted.filter(e => e.type === "external_session_status");
   assert.deepEqual(sends.map(s => s.content), ["first", "second"]);
   assert.deepEqual(fs.readdirSync(inboxDir), []);
   fs.rmSync(tmpDir, { recursive: true, force: true });
+})().catch(error => { console.error(error); process.exit(1); });
+"""
+    )
+    _run_extension_script(node, _extension_path(), script)
+
+
+def test_native_auth_errors_are_correlated_and_redacted(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the Pi extension")
+    script = (
+        _usage_test_preamble()
+        + "\nconst authDir = "
+        + json.dumps(str(tmp_path))
+        + r""";
+const fs = require("fs");
+const crypto = require("crypto");
+process.env.OMNIGENT_PI_NATIVE_AUTH_DIR = authDir;
+const id = crypto.createHash("sha256").update("omnigent").digest("hex").slice(0, 16);
+const file = `auth-${id}.json`;
+const notifications = [];
+ctx.ui.notify = (message) => notifications.push(message);
+const originalError = "API key auth failed for provider omnigent: " +
+  `Failed to resolve API key for provider "omnigent" from shell command: node ${file}`;
+(async () => {
+  for (const [patch, classified] of [
+    [{}, true],
+    [{piPid: process.pid + 1}, false],
+    [{at: Date.now() - 60_000}, false],
+    [{kind: "ok"}, false],
+    [{kind: "private-error"}, false],
+  ]) {
+    postedEvents.length = 0;
+    notifications.length = 0;
+    fs.writeFileSync(path.join(authDir, `${file}.result.json`), JSON.stringify({
+      kind: "failed_exit", piPid: process.pid, at: Date.now(), secret: "DO-NOT-SHOW", ...patch,
+    }));
+    const bodies = [];
+    global.fetch = async (_url, request) => {
+      const body = JSON.parse(request.body);
+      postedEvents.push(body);
+      if (body.data && body.data.item_type === "error") {
+        bodies.push(body);
+        if (bodies.length === 1) throw new Error("socket closed during token resolution");
+      }
+      return {ok: true};
+    };
+    await handlers.message_end({message: {
+      role: "assistant", provider: "omnigent", stopReason: "error", errorMessage: originalError,
+      content: [],
+    }}, ctx);
+    const error = postedEvents.find(e => e.data && e.data.item_type === "error");
+    assert.ok(error);
+    assert.equal(bodies.length, 2);
+    assert.ok(bodies[0].data.source_id);
+    assert.deepEqual(bodies[0], bodies[1]);
+    assert.equal(error.data.item_data.code, classified ? "pi_auth_failed_exit" : "RuntimeError");
+    assert.equal(notifications.length, classified ? 1 : 0);
+    if (classified) {
+      assert.match(error.data.item_data.message, /exited unsuccessfully/);
+      assert.match(notifications[0], /send another message/);
+      assert.ok(!JSON.stringify(postedEvents).includes(file));
+      assert.ok(!fs.existsSync(path.join(authDir, `${file}.result.json`)));
+      postedEvents.length = 0;
+      await handlers.message_end({message: {
+        role: "assistant", provider: "omnigent", stopReason: "error", errorMessage: originalError,
+        content: [], timestamp: Date.now(),
+      }}, ctx);
+      const nextError = postedEvents.find(e => e.data && e.data.item_type === "error");
+      assert.equal(nextError.data.item_data.code, "RuntimeError");
+    }
+    assert.ok(!JSON.stringify(postedEvents).includes("DO-NOT-SHOW"));
+  }
 })().catch(error => { console.error(error); process.exit(1); });
 """
     )
