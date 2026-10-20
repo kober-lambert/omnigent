@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -20,11 +22,15 @@ from .test_kiro_concurrent_permissions import (
     _wait_for,
 )
 from .test_kiro_concurrent_permissions import (
+    kiro_shim_processes as _kiro_shim_processes,
+)
+from .test_kiro_concurrent_permissions import (
     kiro_shim_session as _kiro_shim_session,
 )
 from .test_message_render_parity import _ensure_chat_view, _select_view_mode, _send
 
 kiro_shim_session = _kiro_shim_session
+kiro_shim_processes = _kiro_shim_processes
 
 
 def _shim(mode: str, *, dropped_enters: int = 1, write: bool = False) -> str:
@@ -318,3 +324,67 @@ def test_kiro_two_tabs_cannot_repeat_an_old_retry(
         assert enters_file.read_text().splitlines() == [first_id, first_id, first_id]
     finally:
         other.close()
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize(
+    "kiro_shim_session", [_shim("drop")], indirect=True, ids=["reporting-outage"]
+)
+def test_kiro_retry_recovers_after_reporting_outage(
+    kiro_shim_session: tuple[str, str, Path],
+    kiro_shim_processes: dict[str, subprocess.Popen[bytes]],
+    page: Page,
+) -> None:
+    base_url, sid, bridge_dir = kiro_shim_session
+    record_file = acp_record_path(bridge_dir)
+    enters_file = record_file.with_suffix(record_file.suffix + ".enters")
+    first_id = "perm-req-1-1"
+    eid = kiro_permission_elicitation_id(sid, first_id)
+    detail_url = f"{base_url}/v1/sessions/{sid}/elicitations/{eid}"
+    page.goto(f"{base_url}/c/{sid}")
+    _ensure_chat_view(page)
+    _send(page, "Run two identical commands requiring separate approvals.")
+    approve = page.get_by_role("button", name="Approve", exact=True)
+    expect(approve).to_be_visible(timeout=120_000)
+    standalone = page.context.new_page()
+    inbox = page.context.new_page()
+    runner = kiro_shim_processes["runner"]
+    try:
+        standalone.goto(f"{base_url}/approve/{sid}/{eid}")
+        expect(standalone.get_by_role("button", name="Approve", exact=True)).to_be_visible()
+        inbox.goto(f"{base_url}/inbox")
+        approve.click()
+        _wait_for(lambda: enters_file.exists(), timeout_s=5)
+        runner.send_signal(signal.SIGSTOP)
+        started = time.monotonic()
+        # Leave the browser and server live for the real 30-second cleanup.
+        expect(page.get_by_text("Prompt expired", exact=False)).to_be_visible(timeout=40_000)
+        assert time.monotonic() - started >= 28
+        expect(standalone.get_by_text("Delivery unconfirmed", exact=True)).to_be_visible()
+        assert page.request.get(detail_url).json() == {
+            "status": "resolved",
+            "resolution": "unanswered",
+        }
+        assert _recorder_response_ids(record_file) == set()
+        assert enters_file.read_text().splitlines() == [first_id]
+        runner.send_signal(signal.SIGCONT)
+        for surface in (page, standalone, inbox):
+            expect(surface.get_by_role("button", name="Retry sending approval")).to_be_visible(
+                timeout=20_000
+            )
+        assert page.request.get(detail_url).json()["native_delivery"]["state"] == "unconfirmed"
+        assert enters_file.read_text().splitlines() == [first_id]
+        standalone.get_by_role("button", name="Retry sending approval").click()
+        _wait_for(lambda: first_id in _recorder_response_ids(record_file), timeout_s=15)
+        expect(page.get_by_text("Resolved in Kiro", exact=False)).to_be_visible()
+        expect(standalone.get_by_text("Elicitation resolved", exact=True)).to_be_visible()
+        for surface in (page, standalone, inbox):
+            expect(
+                surface.get_by_role("button", name="Retry sending approval")
+            ).not_to_be_visible()
+        assert enters_file.read_text().splitlines() == [first_id, first_id]
+    finally:
+        if runner.poll() is None:
+            runner.send_signal(signal.SIGCONT)
+        standalone.close()
+        inbox.close()

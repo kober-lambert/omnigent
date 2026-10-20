@@ -4956,7 +4956,11 @@ function reconcileElicitationBlocks(
         candidate.type === "elicitation" && candidate.elicitationId === b.elicitationId,
     );
     if (b.nativeDelivery && preGapCards.get(b.elicitationId) !== b) return b;
-    if (currentDelivery?.nativeDelivery && b.status === "pending") {
+    if (
+      currentDelivery?.nativeDelivery &&
+      !b.nativeDeliveryResolved &&
+      (b.status === "pending" || b.response?.action === "auto_resolved")
+    ) {
       changed = true;
       return { ...currentDelivery, ctx: b.ctx };
     }
@@ -4976,6 +4980,7 @@ function reconcileElicitationBlocks(
     if (
       b.status === "responded" &&
       b.response?.action === "auto_resolved" &&
+      !b.nativeDelivery &&
       preGapAutoResolvedIds.has(b.elicitationId) &&
       pendingNow.has(b.elicitationId)
     ) {
@@ -6197,8 +6202,9 @@ function revivePendingElicitationBlock(
     );
     if (idx === -1) return {};
     const target = s.blocks[idx] as ElicitationBlock;
+    if (target.nativeDeliveryResolved) return {};
     if (incoming?.nativeDelivery) {
-      if (target.status === "responded") return {};
+      if (target.status === "responded" && target.response?.action !== "auto_resolved") return {};
       const updated = { ...incoming, ctx: target.ctx };
       return { blocks: [...s.blocks.slice(0, idx), updated, ...s.blocks.slice(idx + 1)] };
     }
@@ -8008,13 +8014,17 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
           (b) =>
             b.type === "elicitation" &&
             b.elicitationId === event.elicitationId &&
-            b.status === "pending",
+            !b.nativeDeliveryResolved &&
+            (b.status === "pending" || Boolean(b.nativeDelivery)),
         );
         if (matchIdx === -1) return {};
         const target = s.blocks[matchIdx] as ElicitationBlock;
         const updated: ElicitationBlock = {
           ...target,
           status: "responded",
+          ...(target.nativeDelivery
+            ? { nativeDeliveryResolved: event.reason !== "unanswered" }
+            : {}),
           // Carry the verdict when the event delivers one so an approval
           // answered on another surface reads "Approved"/"Rejected";
           // fall back to the neutral pill only when it is truly unknown.

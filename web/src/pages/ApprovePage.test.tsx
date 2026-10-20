@@ -201,7 +201,7 @@ it.each(["success", "http error", "network error"])(
         });
       if (reads === 3) throw new Error("temporary disconnect");
       if (reads === 4) return jsonResponse(waiting);
-      return jsonResponse({ status: "resolved" });
+      return jsonResponse({ status: "resolved", resolution: "confirmed" });
     });
     try {
       await act(async () => {
@@ -304,6 +304,64 @@ it.each(
       expect(screen.getByText(/Network error:/)).toBeInTheDocument();
       await poll();
       expect(screen.getByRole("button", { name: "Retry sending approval" })).toBeEnabled();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it.each([false, true])(
+  "recovers an expired native request without reloading (cold: %s)",
+  async (cold) => {
+    vi.useFakeTimers();
+    const waiting = {
+      status: "pending",
+      message: "Approve pwd",
+      native_delivery: { state: "unconfirmed", attempt: "recovered", action: "decline" },
+    };
+    const expired = { status: "resolved", resolution: "unanswered" };
+    const fetch = vi.mocked(identity.authenticatedFetch);
+    fetch.mockResolvedValue(jsonResponse(cold ? expired : waiting));
+    const poll = () =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+    try {
+      await act(async () => {
+        renderPage();
+      });
+      fetch.mockResolvedValue(jsonResponse(expired));
+      await poll();
+      expect(screen.getByText("Delivery unconfirmed")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Retry sending rejection" }),
+      ).not.toBeInTheDocument();
+      // Cache eviction or an older replica is not confirmation either.
+      fetch.mockResolvedValue(jsonResponse({ status: "resolved" }));
+      await poll();
+      fetch.mockRejectedValue(new Error("offline"));
+      await poll();
+      expect(screen.getByText("Delivery unconfirmed")).toBeInTheDocument();
+      fetch.mockResolvedValue(jsonResponse(waiting));
+      await poll();
+      fireEvent.click(screen.getByRole("button", { name: "Retry sending rejection" }));
+      const posts = fetch.mock.calls.filter(([, init]) => init?.method === "POST");
+      expect(posts).toHaveLength(1);
+      expect(JSON.parse(posts[0]![1]!.body as string)).toEqual({
+        action: "decline",
+        _meta: { native_delivery_attempt: "recovered" },
+      });
+      fetch.mockResolvedValue(jsonResponse({ status: "resolved", resolution: "confirmed" }));
+      await poll();
+      expect(screen.getByText("Elicitation resolved")).toBeInTheDocument();
+      const reads = fetch.mock.calls.length;
+      fetch.mockResolvedValue(jsonResponse(waiting));
+      await poll();
+      expect(fetch.mock.calls).toHaveLength(reads);
+      expect(
+        screen.queryByRole("button", { name: "Retry sending rejection" }),
+      ).not.toBeInTheDocument();
     } finally {
       cleanup();
       vi.useRealTimers();

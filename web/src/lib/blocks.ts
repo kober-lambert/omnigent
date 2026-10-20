@@ -605,6 +605,8 @@ export interface ResponseEndBlock {
  */
 export interface ElicitationBlock {
   nativeDelivery?: NativePermissionDelivery;
+  /** Positive native resolution evidence; snapshot absence alone is insufficient. */
+  nativeDeliveryResolved?: boolean;
   type: "elicitation";
   ctx: BlockContext;
   elicitationId: string;

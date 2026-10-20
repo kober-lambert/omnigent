@@ -8,9 +8,10 @@
  * approve/reject controls using the same design system as the
  * inline `ApprovalCard`.
  *
- * Three states:
+ * Main states:
  * - **Loading** — fetching the elicitation.
  * - **Pending** — approve/reject buttons shown.
+ * - **Recovering** — native delivery is unconfirmed; keep checking for the request.
  * - **Resolved** — the elicitation was already resolved, timed out,
  *   or the id is unknown.
  */
@@ -31,6 +32,7 @@ import { formatPreview } from "@/lib/previewFormat";
 
 interface ElicitationData {
   status: "pending" | "resolved";
+  resolution?: "unanswered" | "confirmed";
   message?: string;
   phase?: string;
   policy_name?: string;
@@ -42,6 +44,7 @@ type PageState =
   | { kind: "loading" }
   | { kind: "pending"; data: ElicitationData }
   | { kind: "resolved" }
+  | { kind: "recovering" }
   | { kind: "submitted"; action: "accept" | "decline" | "cancel" }
   | { kind: "error"; message: string };
 
@@ -63,6 +66,7 @@ export function ApprovePage() {
     }
     let cancelled = false;
     let polling = false;
+    let nativeDeliverySeen = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
       const revision = submission.current.revision;
@@ -79,12 +83,13 @@ export function ApprovePage() {
         const data: ElicitationData = await res.json();
         if (cancelled) return;
         data.native_delivery = parseNativePermissionDelivery(data.native_delivery);
+        nativeDeliverySeen ||= Boolean(data.native_delivery) || data.resolution === "unanswered";
         polling =
-          data.status !== "resolved" &&
-          (Boolean(data.native_delivery) || revision !== submission.current.revision);
+          (nativeDeliverySeen && data.resolution !== "confirmed") ||
+          (data.status !== "resolved" && revision !== submission.current.revision);
         if (data.status === "resolved") {
           submission.current = { revision: submission.current.revision + 1, pending: false };
-          setState({ kind: "resolved" });
+          setState({ kind: polling ? "recovering" : "resolved" });
         } else if (revision === submission.current.revision) {
           // A new server attempt supersedes the POST still waiting on its response.
           if (
@@ -159,6 +164,15 @@ export function ApprovePage() {
       {state.kind === "loading" && (
         <Alert className="flex flex-col gap-2 py-4 px-5">
           <AlertTitle className="text-ui">Loading elicitation…</AlertTitle>
+        </Alert>
+      )}
+
+      {state.kind === "recovering" && (
+        <Alert className="flex flex-col gap-2 py-4 px-5">
+          <AlertTitle className="text-ui">Delivery unconfirmed</AlertTitle>
+          <AlertDescription className="text-sm">
+            The approval request is temporarily unavailable. Checking for recovery…
+          </AlertDescription>
         </Alert>
       )}
 

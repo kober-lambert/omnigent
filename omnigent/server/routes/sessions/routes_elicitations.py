@@ -169,7 +169,9 @@ def register_elicitations_routes(
             e.g. ``"elicit_abc123"``.
         :returns: JSON with ``status`` (``"pending"`` or
             ``"resolved"``), and when pending: ``message``,
-            ``phase``, ``policy_name``, ``content_preview``.
+            ``phase``, ``policy_name``, ``content_preview``. Native requests
+            may include ``resolution`` (``"unanswered"`` or ``"confirmed"``)
+            after clearing; absence alone does not prove native confirmation.
         :raises OmnigentError: 404 if the session does not exist.
         """
         user_id = _get_user_id(request, auth_provider)
@@ -183,7 +185,8 @@ def register_elicitations_routes(
 
         found = pending_elicitations.lookup(elicitation_id, conversation_id=session_id)
         if found is None:
-            return {"status": "resolved"}
+            resolution = pending_elicitations.native_resolution_for(session_id, elicitation_id)
+            return {"status": "resolved", **({"resolution": resolution} if resolution else {})}
 
         _conv_id, event = found
         params_value = event.get("params")

@@ -178,7 +178,9 @@ export function InboxPage() {
       queryKey: ["inbox-elicitations", row.id, row.pending_elicitations_count, row.updated_at],
       queryFn: () => getSession(row.id),
       retry: 1,
+      // The count and snapshot can disagree briefly while a native request re-parks.
       refetchInterval: (query: Query<Session>) =>
+        query.state.data?.pendingElicitations?.length === 0 ||
         query.state.data?.pendingElicitations?.some((event) => {
           const params = event.params as Record<string, unknown> | undefined;
           return params?.native_delivery !== undefined;

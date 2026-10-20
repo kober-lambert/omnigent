@@ -451,6 +451,36 @@ async def test_kiro_abandoned_wait_cleanup(
         snapshot = (await client.get(f"/v1/sessions/{sid}")).json()
         assert bool(snapshot["pending_elicitations"]) == survives
         assert pending_elicitations.count_for(sid) == int(survives)
+        detail_url = f"/v1/sessions/{sid}/elicitations/{eid}"
+        detail = (await client.get(detail_url)).json()
+        if not survives:
+            assert detail == {
+                "status": "resolved",
+                "resolution": "confirmed" if ending == "receipt" else "unanswered",
+            }
+        if ending == "sending":
+            payload["native_delivery"] = {
+                "state": "unconfirmed",
+                "attempt": "recovered",
+                "action": "accept",
+            }
+            retry = asyncio.create_task(client.post(hook_url, json=payload))
+            await _wait_for_state(eid, "unconfirmed")
+            assert (await client.get(detail_url)).json()["native_delivery"] == payload[
+                "native_delivery"
+            ]
+            assert pending_elicitations.native_resolution_for(sid, eid) is None
+        if ending in ("sending", "disconnect"):
+            await client.post(
+                f"/v1/sessions/{sid}/events",
+                json={"type": "external_elicitation_resolved", "data": {"elicitation_id": eid}},
+            )
+            if retry is not None:
+                await retry
+            assert (await client.get(detail_url)).json() == {
+                "status": "resolved",
+                "resolution": "confirmed",
+            }
     finally:
         if retry is not None:
             await client.post(

@@ -1882,7 +1882,11 @@ def register_events_routes(
                     code=ErrorCode.INVALID_INPUT,
                 )
             _signal_harness_elicitation_resolved_by_id(session_id, elicitation_id)
-            if entry is not None and entry[1].get("params", {}).get("native_delivery") is not None:
+            if (
+                entry is not None and entry[1].get("params", {}).get("native_delivery") is not None
+            ) or pending_elicitations.native_resolution_for(
+                session_id, elicitation_id
+            ) == "unanswered":
                 # The attempted web verdict may differ from the terminal's answer.
                 _publish_elicitation_resolved(session_id, elicitation_id)
                 await asyncio.to_thread(

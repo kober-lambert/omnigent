@@ -701,3 +701,56 @@ def test_snapshot_for_returns_independent_copies() -> None:
     # the index; if "tampered-top-level", the top-level copy is
     # there but nested values are still shared.
     assert snap2[0]["params"]["message"] == "original"
+
+
+def test_native_resolution_evidence_is_scoped_and_repark_clears_it() -> None:
+    from omnigent.db.db_models import workspace_scope
+
+    request = _elicit_event("shared")
+    request["params"] = {"native_delivery": {"state": "sending", "attempt": "first"}}
+    expired = {
+        "type": "response.elicitation_resolved",
+        "elicitation_id": "shared",
+        "reason": "unanswered",
+    }
+    confirmed = {"type": "response.elicitation_resolved", "elicitation_id": "shared"}
+    with workspace_scope(1):
+        pending_elicitations.record_publish("session", request)
+        pending_elicitations.record_publish("session", expired)
+        assert pending_elicitations.native_resolution_for("session", "shared") == "unanswered"
+        assert pending_elicitations.native_resolution_for("other", "shared") is None
+    with workspace_scope(2):
+        assert pending_elicitations.native_resolution_for("session", "shared") is None
+    with workspace_scope(1):
+        pending_elicitations.record_publish("session", confirmed)
+        assert pending_elicitations.native_resolution_for("session", "shared") == "confirmed"
+        pending_elicitations.record_publish("session", request)
+        assert pending_elicitations.native_resolution_for("session", "shared") is None
+        pending_elicitations.resolve("session", "shared")
+        assert pending_elicitations.native_resolution_for("session", "shared") is None
+        pending_elicitations.record_publish("session", _elicit_event("generic"))
+        pending_elicitations.record_publish("session", {**expired, "elicitation_id": "generic"})
+        assert pending_elicitations.native_resolution_for("session", "generic") is None
+
+
+def test_native_resolution_evidence_is_bounded_and_eviction_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cachetools import LRUCache
+
+    from omnigent.db.workspace_cache import WorkspaceScopedCache
+
+    monkeypatch.setattr(
+        pending_elicitations,
+        "_native_resolutions",
+        WorkspaceScopedCache(lambda: LRUCache(maxsize=1)),
+    )
+    for eid in ("old", "new"):
+        request = _elicit_event(eid)
+        request["params"] = {"native_delivery": {"state": "sending", "attempt": "first"}}
+        pending_elicitations.record_publish("session", request)
+        pending_elicitations.record_publish(
+            "session", {"type": "response.elicitation_resolved", "elicitation_id": eid}
+        )
+    assert pending_elicitations.native_resolution_for("session", "old") is None
+    assert pending_elicitations.native_resolution_for("session", "new") == "confirmed"

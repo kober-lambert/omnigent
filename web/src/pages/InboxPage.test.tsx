@@ -789,3 +789,46 @@ it.each(
     expect(await screen.findByRole("button", { name: "Retry sending approval" })).toBeEnabled();
   },
 );
+
+it("recovers a native request after an empty snapshot without reloading", async () => {
+  vi.useFakeTimers();
+  const row = conversation();
+  vi.mocked(conversationsHook.useConversations).mockReturnValue(conversationsStub([row]));
+  const pending = [
+    rawElicitation("eli_1", "Approve pwd", {
+      native_delivery: { state: "unconfirmed", attempt: "recovered", action: "accept" },
+    }),
+  ];
+  let pendingElicitations = pending;
+  vi.mocked(sessionsApi.getSession).mockImplementation(
+    async () =>
+      ({ pendingElicitations }) as unknown as Awaited<ReturnType<typeof sessionsApi.getSession>>,
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000, refetchOnWindowFocus: false } },
+  });
+  const poll = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(1001);
+    });
+  try {
+    await act(async () => {
+      renderPage(queryClient);
+    });
+    await poll();
+    expect(screen.getByRole("button", { name: "Retry sending approval" })).toBeVisible();
+    pendingElicitations = [];
+    await poll();
+    expect(
+      screen.queryByRole("button", { name: "Retry sending approval" }),
+    ).not.toBeInTheDocument();
+    pendingElicitations = pending;
+    await poll();
+    expect(screen.getByRole("button", { name: "Retry sending approval" })).toBeVisible();
+    expect(sessionsApi.approve).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    queryClient.clear();
+    vi.useRealTimers();
+  }
+});

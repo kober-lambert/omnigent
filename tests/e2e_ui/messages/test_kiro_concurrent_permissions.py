@@ -408,10 +408,17 @@ def _create_kiro_native_session(base_url: str, runner_id: str, workspace: Path) 
 
 
 @pytest.fixture
+def kiro_shim_processes() -> dict[str, subprocess.Popen[bytes]]:
+    """Expose only this fixture's children for process interruption scenarios."""
+    return {}
+
+
+@pytest.fixture
 def kiro_shim_session(
     built_spa: None,
     tmp_path_factory: pytest.TempPathFactory,
     request: pytest.FixtureRequest,
+    kiro_shim_processes: dict[str, subprocess.Popen[bytes]],
 ) -> Iterator[tuple[str, str, Path]]:
     """A runner-bound kiro-native session backed by the fake ``kiro-cli`` TUI.
 
@@ -560,6 +567,7 @@ def kiro_shim_session(
                 f"{runner_log_path.read_text()[-3000:] if runner_log_path.exists() else ''}"
             )
 
+        kiro_shim_processes["runner"] = runner_proc
         session_id = _create_kiro_native_session(base_url, runner_id, workspace)
         bridge_dir = bridge_dir_for_session_id(session_id)
         yield (base_url, session_id, bridge_dir)

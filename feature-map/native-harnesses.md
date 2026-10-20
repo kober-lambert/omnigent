@@ -252,6 +252,10 @@ Cross-harness journeys:
   identical commands have distinct request IDs; only the first may be answered.
   Write variants use Kiro's full-path heading and diff preview, covering approval
   and rejection with a second same-basename file left pending.
+  `tests/e2e_ui/messages/test_kiro_permission_retry.py::test_kiro_retry_recovers_after_reporting_outage`
+  pauses the owned runner after a lost Enter, waits through the real 30-second
+  cleanup, then resumes it. Already-open Chat, standalone approval, and Inbox
+  restore Retry without reloading; no second Enter occurs until the user retries.
   `tests/e2e_ui/messages/test_kiro_permission_retry.py::test_kiro_late_confirmation_removes_retry`
   delays input consumption with real elapsed time and checks that late
   confirmation removes Retry without sending another Enter, including when the
