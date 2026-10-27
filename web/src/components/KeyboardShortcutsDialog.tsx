@@ -80,6 +80,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
     items: [
       { label: "Open command palette", keys: [MOD_KEY, "K"] },
       { label: "Find a session by name", keys: [MOD_KEY, ALT_KEY, "S"] },
+      { label: "Rename current session", keys: [MOD_KEY, ALT_KEY, "R"] },
       { label: "Open Settings", keys: [MOD_KEY, ALT_KEY, ","] },
       { label: "Show keyboard shortcuts", keys: [MOD_KEY, "/"] },
     ],
@@ -91,6 +92,9 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { label: "Recall next prompt", keys: [DOWN] },
       { label: "Accept approval prompt", keys: [MOD_KEY, ENTER_KEY] },
       { label: "Open model picker", keys: [CTRL_KEY, SHIFT_KEY, "M"] },
+      { label: "Cycle model", keys: [CTRL_KEY, ALT_KEY, "M"] },
+      { label: "Cycle reasoning effort", keys: [CTRL_KEY, ALT_KEY, "E"] },
+      { label: "Cycle permission mode (in session)", keys: [SHIFT_KEY, "Tab"] },
       { label: "Focus chat input", keys: [CTRL_KEY, SHIFT_KEY, "L"] },
       { label: "Toggle voice dictation", keys: [MOD_KEY, ALT_KEY, "V"] },
       { label: "Stop response", keys: ["Esc"] },
@@ -234,7 +238,7 @@ export function KeyboardShortcutsList({
   );
   const settings = variant === "settings";
   return (
-    <div className={settings ? "flex flex-col gap-6" : undefined}>
+    <div className={settings ? "flex flex-col gap-10" : undefined}>
       {groups.map((group) => (
         <section key={group.title} className={settings ? "" : "mb-4 last:mb-0"}>
           <h3

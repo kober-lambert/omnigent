@@ -86,6 +86,7 @@ describe("KeyboardShortcutsList settings layout", () => {
 
     const heading = screen.getByRole("heading", { name: "General" });
     const list = heading.closest("section")?.querySelector("ul");
+    expect(heading.closest("section")?.parentElement).toHaveClass("gap-10");
     expect(heading).toHaveClass("text-ui", "text-foreground");
     expect(list).toHaveClass("rounded-xl", "border-border", "bg-card");
   });
@@ -130,9 +131,11 @@ describe("KeyboardShortcutsDialog", () => {
     expect(keysFor("Start a new session")).toEqual(["Ctrl", "Shift", "O"]);
     expect(screen.getByText("Open command palette")).toBeTruthy();
     expect(keysFor("Open Settings")).toEqual(["Ctrl", "Alt", ","]);
+    expect(keysFor("Rename current session")).toEqual(["Ctrl", "Alt", "R"]);
     expect(screen.getByText("Show keyboard shortcuts")).toBeTruthy();
     expect(screen.getByText("Send message")).toBeTruthy();
     expect(keysFor("Open model picker")).toEqual(["Ctrl", "⇧", "M"]);
+    expect(keysFor("Cycle permission mode (in session)")).toEqual(["⇧", "Tab"]);
     expect(screen.getByText("Recall previous prompt")).toBeTruthy();
     expect(screen.getByText("Previous session")).toBeTruthy();
     expect(keysFor("Previous session")).toEqual(["Ctrl", "["]);

@@ -822,23 +822,27 @@ describe('WorkspacePanel "+" new-tab menu', () => {
   });
 
   it("renders exactly one '+' — after the nav tabs with no open tabs, trailing the tabs otherwise", () => {
+    // No open tabs → "+" follows the nav tabs, outside the right-pinned group.
     declaresShell();
-    // No open tabs → single "+", sitting after the nav tabs.
     renderWorkspace({ openFiles: [] });
     expect(screen.getAllByRole("button", { name: "Open new" })).toHaveLength(1);
+    const leadingPlus = screen.getByRole("button", { name: "Open new" });
+    expect(leadingPlus.closest(".ml-auto")).toBeNull();
+    expect(
+      screen.getByRole("tablist").compareDocumentPosition(leadingPlus) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     cleanup();
 
-    // With an open file tab → still exactly one "+", now trailing the tabs. It
-    // sits OUTSIDE the scrolling tabs region (as its next sibling) so it stays
-    // pinned when the tabs overflow instead of scrolling/overlapping.
+    // With open tabs "+" leads the right-pinned group, outside the scrolling
+    // tabs region so it stays put when the tabs overflow.
     declaresShell();
     renderWorkspace({ openFiles: ["src/App.tsx"] });
+    expect(screen.getAllByRole("button", { name: "Open new" })).toHaveLength(1);
     const plus = screen.getByRole("button", { name: "Open new" });
-    expect(plus).toBeInTheDocument();
-    // The scrolling tabs region (holds the file tab's close button) is the
-    // "+" wrapper's immediately-preceding sibling — the "+" is not inside it.
-    const plusWrapper = plus.parentElement!;
-    const tabsRegion = plusWrapper.previousElementSibling as HTMLElement;
+    const trailing = plus.closest(".ml-auto")!;
+    expect(trailing.firstElementChild).toContainElement(plus);
+    const tabsRegion = trailing.previousElementSibling as HTMLElement;
     expect(tabsRegion).toContainElement(screen.getByRole("button", { name: "Close App.tsx" }));
     expect(tabsRegion).not.toContainElement(plus);
   });
@@ -1090,33 +1094,30 @@ describe("WorkspacePanel tab-strip layout (regression)", () => {
   // The row containing the fixed nav tabs — the tab strip.
   const strip = () => screen.getByRole("tab", { name: /files/i }).closest("div.border-b")!;
 
-  it("keeps exactly one ml-auto in the strip with no open tabs (picker pins trailing controls right)", () => {
+  it("keeps exactly one ml-auto in the strip with no open tabs (trailing group pins right)", () => {
     // Two ml-auto siblings split the free space and strand the nav group
-    // mid-strip. With no open tabs the single ml-auto lives on the panel picker
-    // wrapper; the nav group must NOT also carry one.
+    // mid-strip. The single ml-auto lives on the trailing control group; the
+    // nav group must NOT also carry one.
     renderWorkspace({ openFiles: [], showBrowserTab: true });
 
     expect(strip().querySelectorAll(".ml-auto")).toHaveLength(1);
-    // The picker pins the trailing controls right.
     const picker = screen.getByRole("button", { name: "Select panel" });
-    expect(picker.parentElement).toHaveClass("ml-auto");
+    expect(picker.closest(".ml-auto")).not.toBeNull();
     // The nav tablist stays left — no ml-auto.
     expect(screen.getByRole("tablist")).not.toHaveClass("ml-auto");
   });
 
-  it("keeps exactly one ml-auto in the strip with open tabs (picker pins trailing controls right)", () => {
+  it("keeps exactly one ml-auto in the strip with open tabs (trailing group pins right)", () => {
     // The nav tabs stay anchored on the LEFT with open tabs — the open-tabs
-    // region renders to their right and the panel picker keeps the row's
-    // single ml-auto. Two ml-auto siblings would split the free space.
+    // region renders to their right and the trailing control group keeps the
+    // row's single ml-auto. Two ml-auto siblings would split the free space.
     renderWorkspace({ openFiles: ["src/App.tsx"], showBrowserTab: true });
 
     expect(strip().querySelectorAll(".ml-auto")).toHaveLength(1);
     // The nav tablist stays left — no ml-auto of its own.
     expect(screen.getByRole("tablist")).not.toHaveClass("ml-auto");
-    // The panel picker owns the single ml-auto, pinning the controls right.
-    expect(screen.getByRole("button", { name: "Select panel" }).parentElement).toHaveClass(
-      "ml-auto",
-    );
+    // The trailing control group owns the single ml-auto, pinning it right.
+    expect(screen.getByRole("button", { name: "Select panel" }).closest(".ml-auto")).not.toBeNull();
     // The divider is present (separating the nav tabs from the open tabs) and
     // stays container-query gated to the ≥500px anchored case.
     const divider = strip().querySelector(".bg-border-strong");
@@ -1133,8 +1134,8 @@ describe("WorkspacePanel tab-strip layout (regression)", () => {
     renderWorkspace({ openFiles: ["src/App.tsx"] });
 
     const plus = screen.getByRole("button", { name: "Open new" });
-    // Scroller is the "+" wrapper's preceding sibling; it holds only the tabs.
-    const tabsRegion = plus.parentElement!.previousElementSibling as HTMLElement;
+    // Scroller precedes the trailing group holding "+"; it holds only the tabs.
+    const tabsRegion = plus.closest(".ml-auto")!.previousElementSibling as HTMLElement;
     expect(tabsRegion.children).toHaveLength(1);
     expect(tabsRegion).toContainElement(screen.getByRole("button", { name: "Close App.tsx" }));
   });
@@ -1247,12 +1248,27 @@ describe("WorkspacePanel mobile side chats", () => {
     });
 
   it.each([false, true])(
-    "keeps a side chat and draft when close fails (mobile=%s)",
+    "keeps a side chat, draft, and queue when close fails (mobile=%s)",
     async (mobile) => {
       isMobileMock.mockReturnValue(mobile);
       openTabs();
-      const stop = vi.spyOn(sessionsApi, "stopSession").mockRejectedValueOnce(new Error("offline"));
-      useChatStore.setState({ sideChatDrafts: { conv_side_b: "Keep this question" } });
+      const followUp = {
+        queueId: "q_side",
+        text: "Queued follow-up",
+        conversationId: "conv_side_b",
+      };
+      const otherChat = { queueId: "q_other", text: "Other chat", conversationId: "conv_side_a" };
+      const sideQueue = () =>
+        useChatStore.getState().queuedMessages.filter((m) => m.conversationId === "conv_side_b");
+      const queuedAtStop: unknown[] = [];
+      const stop = vi.spyOn(sessionsApi, "stopSession").mockImplementationOnce(async () => {
+        queuedAtStop.push(sideQueue());
+        throw new Error("offline");
+      });
+      useChatStore.setState({
+        sideChatDrafts: { conv_side_b: "Keep this question" },
+        queuedMessages: [followUp, otherChat],
+      });
       renderWorkspace({ rightRailTab: "sidechat", mobileSideChatsOpen: true });
       const surface = mobile
         ? screen.getByTestId("side-chats-panel-drawer")
@@ -1264,14 +1280,23 @@ describe("WorkspacePanel mobile side chats", () => {
       );
       expect(screen.getByTestId("side-chat-pane-stub")).toHaveTextContent("conv_side_b");
       expect(useChatStore.getState().sideChatDrafts.conv_side_b).toBe("Keep this question");
+      expect(sideQueue()).toEqual([followUp]);
 
-      stop.mockResolvedValueOnce({ queued: false });
+      const queuedDuringStop = { ...followUp, queueId: "q_late", text: "Queued while closing" };
+      stop.mockImplementationOnce(async () => {
+        queuedAtStop.push(sideQueue());
+        useChatStore.setState((s) => ({ queuedMessages: [...s.queuedMessages, queuedDuringStop] }));
+        return { queued: false };
+      });
       fireEvent.click(within(surface).getByRole("button", { name: "Close Side chat 2" }));
       await waitFor(() =>
         expect(screen.getByTestId("side-chat-pane-stub")).toHaveTextContent("conv_side_a"),
       );
       expect(stop.mock.calls).toEqual([["conv_side_b"], ["conv_side_b"]]);
+      expect(queuedAtStop).toEqual([[], []]);
       expect(useChatStore.getState().sideChatDrafts.conv_side_b).toBeUndefined();
+      expect(useChatStore.getState().queuedMessages).toEqual([otherChat]);
+      useChatStore.setState({ queuedMessages: [] });
       stop.mockRestore();
     },
   );

@@ -194,7 +194,7 @@ vi.mock("./FileViewer", () => ({
   }: {
     open: boolean;
     path: string;
-    position?: { line: number; column?: number };
+    position?: { line: number; column?: number; endLine?: number };
     onClose: () => void;
     frameless?: boolean;
   }) => (
@@ -204,6 +204,7 @@ vi.mock("./FileViewer", () => ({
       data-path={path}
       data-line={position?.line}
       data-column={position?.column}
+      data-end-line={position?.endLine}
     >
       <button type="button" aria-label="file-viewer: close" onClick={onClose}>
         close
@@ -1949,7 +1950,7 @@ describe("Workspace rail maximize", () => {
     expect(screen.getByTestId("sidebar")).toHaveAttribute("data-open", "true");
   });
 
-  it("reflects the docked sidebar's open state on the app shell for CSS to key off", () => {
+  it("reflects the docked sidebar state and width on the app shell", () => {
     // The maximized rail's traffic-light clearance (index.css) must drop when
     // the sidebar is reopened over it — the sidebar then covers the window
     // corner, so there are no lights to clear. That CSS keys off
@@ -1964,11 +1965,14 @@ describe("Workspace rail maximize", () => {
     // `:not([data-sidebar-open])` matches and the clearance still applies.
     expect(screen.getByTestId("sidebar")).toHaveAttribute("data-open", "false");
     expect(shell?.hasAttribute("data-sidebar-open")).toBe(false);
+    expect((shell as HTMLElement).style.getPropertyValue("--app-sidebar-width")).toBe("0px");
 
-    // Reopen the sidebar: the attribute appears, dropping the clearance.
+    // Reopen the sidebar: the attribute appears, dropping the clearance, and
+    // the background reservation expands to the live sidebar width.
     fireEvent.click(screen.getByRole("button", { name: /open sidebar/i }));
     expect(screen.getByTestId("sidebar")).toHaveAttribute("data-open", "true");
     expect(shell).toHaveAttribute("data-sidebar-open", "true");
+    expect((shell as HTMLElement).style.getPropertyValue("--app-sidebar-width")).toBe("320px");
   });
 
   it.each([
@@ -4311,6 +4315,56 @@ describe("AppShell clone/fork action", () => {
     },
   );
 
+  it("disables directory recovery for an Arclet session that forks only onto a new Arclet", async () => {
+    mockConversations([{ id: "conv_arclet", permission_level: 4 }]);
+    useSessionMock.mockReturnValue({
+      session: sessionSnapshot({
+        id: "conv_arclet",
+        workspace: "/missing/repo",
+        hostId: "host_arclet",
+        labels: { "omnigent.host_type": "managed" },
+      }),
+      isLoading: false,
+      error: null,
+    });
+    useHostsMock.mockReturnValue({
+      data: [
+        {
+          host_id: "host_arclet",
+          name: "Arclet",
+          owner: "owner",
+          status: "online",
+          sandbox_provider: "arclet",
+        },
+      ],
+    } as ReturnType<typeof useHosts>);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <CapabilitiesProvider
+        info={serverInfo({ managed_sandboxes_enabled: true, sandbox_providers: ["arclet"] })}
+      >
+        {sessionShellTree(
+          client,
+          "/c/conv_arclet",
+          <ConversationScopeContext.Provider value="conv_arclet">
+            <ErrorBanner message="Missing directory" source="execution" code="workspace_missing" />
+          </ConversationScopeContext.Provider>,
+        )}
+      </CapabilitiesProvider>,
+    );
+
+    const recover = screen.getByRole("button", { name: "Continue in another directory…" });
+    expect(recover).toBeDisabled();
+    fireEvent.focus(screen.getByRole("group", { name: "Continue in another directory…" }));
+    await waitFor(() =>
+      expect(screen.getByRole("tooltip")).toHaveTextContent(
+        "This sandbox session can only be cloned onto a new sandbox.",
+      ),
+    );
+    fireEvent.click(recover);
+    expect(screen.queryByTestId("fork-session-dialog")).not.toBeInTheDocument();
+  });
+
   it("opens workspace recovery and resets it before a later normal fork", async () => {
     const source = sessionSnapshot({
       id: "conv_abc",
@@ -5289,6 +5343,15 @@ describe("file navigation request precedence", () => {
         <button type="button" onClick={() => openFile?.("AGENTS.md", { line: 200, column: 3 })}>
           Cite AGENTS
         </button>
+        <button
+          type="button"
+          onClick={() => openFile?.("AGENTS.md", { line: 10, column: 2, endLine: 14 })}
+        >
+          Cite AGENTS range
+        </button>
+        <button type="button" onClick={() => openFile?.("AGENTS.md", { line: 10, endLine: 10 })}>
+          Cite AGENTS empty range
+        </button>
       </>
     );
   }
@@ -5374,15 +5437,59 @@ describe("file navigation request precedence", () => {
     expect(screen.getByTestId("file-viewer-inline")).not.toHaveAttribute("data-line");
   });
 
+  it("carries a cited line range through the URL and drops it for a single-line citation", () => {
+    renderNavigationShell();
+    fireEvent.click(screen.getByRole("button", { name: "Cite AGENTS range" }));
+    const viewer = screen.getByTestId("file-viewer-inline");
+    expect(viewer).toHaveAttribute("data-line", "10");
+    expect(viewer).toHaveAttribute("data-end-line", "14");
+    expect(screen.getByTestId("url-params")).toHaveTextContent("endLine=14");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cite AGENTS" }));
+    expect(screen.getByTestId("file-viewer-inline")).not.toHaveAttribute("data-end-line");
+    expect(screen.getByTestId("url-params")).not.toHaveTextContent("endLine=");
+  });
+
+  it("drops an end line that does not follow the cited line", () => {
+    renderNavigationShell();
+    fireEvent.click(screen.getByRole("button", { name: "Cite AGENTS empty range" }));
+    expect(screen.getByTestId("file-viewer-inline")).toHaveAttribute("data-line", "10");
+    expect(screen.getByTestId("file-viewer-inline")).not.toHaveAttribute("data-end-line");
+    expect(screen.getByTestId("url-params")).not.toHaveTextContent("endLine=");
+  });
+
+  it("opens an initial URL range citation and ignores an end before its start or without a start line", () => {
+    const { unmount } = renderNavigationShell(
+      reactRouterRouting,
+      "?file=README.md&line=100&endLine=104",
+    );
+    expect(screen.getByTestId("file-viewer-inline")).toHaveAttribute("data-end-line", "104");
+    unmount();
+
+    const { unmount: unmountBackwards } = renderNavigationShell(
+      reactRouterRouting,
+      "?file=README.md&line=100&endLine=90",
+    );
+    expect(screen.getByTestId("file-viewer-inline")).toHaveAttribute("data-line", "100");
+    expect(screen.getByTestId("file-viewer-inline")).not.toHaveAttribute("data-end-line");
+    unmountBackwards();
+
+    renderNavigationShell(reactRouterRouting, "?file=README.md&endLine=104");
+    expect(screen.getByTestId("file-viewer-inline")).toHaveAttribute("data-path", "README.md");
+    expect(screen.getByTestId("file-viewer-inline")).not.toHaveAttribute("data-line");
+    expect(screen.getByTestId("file-viewer-inline")).not.toHaveAttribute("data-end-line");
+  });
+
   it("closing the active file clears both coordinates before selecting its neighbor", () => {
     renderNavigationShell();
     fireEvent.click(screen.getByRole("button", { name: "Cite README" }));
-    fireEvent.click(screen.getByRole("button", { name: "Cite AGENTS" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cite AGENTS range" }));
     fireEvent.click(screen.getByRole("button", { name: "Close AGENTS.md" }));
     expect(screen.getByTestId("file-viewer-inline")).toHaveAttribute("data-path", "README.md");
     expect(screen.getByTestId("file-viewer-inline")).not.toHaveAttribute("data-line");
     expect(screen.getByTestId("url-params")).not.toHaveTextContent("line=");
     expect(screen.getByTestId("url-params")).not.toHaveTextContent("column=");
+    expect(screen.getByTestId("url-params")).not.toHaveTextContent("endLine=");
   });
 });
 

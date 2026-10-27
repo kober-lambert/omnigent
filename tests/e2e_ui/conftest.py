@@ -93,6 +93,9 @@ from tests.helpers.ui_configuration import (
     pytest_configure as pytest_configure,
 )
 from tests.helpers.ui_configuration import (
+    pytest_unconfigure as pytest_unconfigure,
+)
+from tests.helpers.ui_configuration import (
     temp_omnigent_mock_config as _temp_omnigent_mock_config,
 )
 from tests.helpers.ui_server_compat import (
@@ -326,7 +329,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--ui-dependency-smoke",
         action="store_true",
         default=False,
-        help="Run compatibility smoke journeys and all Codex sidecar consumers.",
+        help="Deprecated; removal in 0.21.0. Run compatibility smoke and Codex sidecar consumers.",
     )
     parser.addoption(
         "--ui-codex-sidecar-only",
